@@ -1,5 +1,6 @@
 package com.socialpause.app
 
+import android.app.AlarmManager
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
@@ -21,6 +22,7 @@ private const val CHANNEL = "pause_session"
 private const val NOTIFICATION_ID = 42
 const val ACTION_START = "com.socialpause.app.START"
 const val ACTION_STOP = "com.socialpause.app.STOP"
+const val ACTION_EXPIRE = "com.socialpause.app.EXPIRE"
 const val EXTRA_ID = "session_id"
 const val EXTRA_PACKAGES = "packages"
 const val EXTRA_MINUTES = "minutes"
@@ -28,9 +30,10 @@ const val EXTRA_MINUTES = "minutes"
 class StopReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val id = intent.getStringExtra(EXTRA_ID) ?: return
-        // Never create a service merely because an old notification was tapped.
-        if (intent.action != ACTION_STOP || SessionRuntime.state.value?.id != id) return
-        context.startService(Intent(context, PauseVpnService::class.java).setAction(ACTION_STOP).putExtra(EXTRA_ID, id))
+        // Never create a service merely because an old notification or alarm fired.
+        if (intent.action != ACTION_STOP && intent.action != ACTION_EXPIRE) return
+        if (SessionRuntime.state.value?.id != id) return
+        context.startService(Intent(context, PauseVpnService::class.java).setAction(intent.action).putExtra(EXTRA_ID, id))
     }
 }
 
@@ -61,6 +64,8 @@ class PauseVpnService : VpnService() {
             },
             scheduler = object : ExpiryScheduler {
                 override fun schedule(id: String, generation: Long, elapsedDeadline: Long) {
+                    scheduleAlarm(id, elapsedDeadline)
+                    // Backup while awake; coroutine delays stall in deep sleep, which the alarm covers.
                     timer = scope.launch {
                         while (true) {
                             val remaining = elapsedDeadline - SystemClock.elapsedRealtime()
@@ -70,7 +75,10 @@ class PauseVpnService : VpnService() {
                         controller.expire(generation)
                     }
                 }
-                override fun cancel() { timer?.cancel(); timer = null }
+                override fun cancel() {
+                    timer?.cancel(); timer = null
+                    getSystemService(AlarmManager::class.java).cancel(expiryIntent(""))
+                }
             },
             store = store,
             host = object : SessionHost {
@@ -106,6 +114,9 @@ class PauseVpnService : VpnService() {
                 sessionStartId = startId
                 controller.start(id, packages, minutes)
             }
+        } else if (action == ACTION_EXPIRE) {
+            val id = intent.getStringExtra(EXTRA_ID)
+            scope.launch { controller.expireIfDue(id) }
         } else if (action == ACTION_STOP) {
             val id = intent.getStringExtra(EXTRA_ID)
             scope.launch { controller.stop(id) }
@@ -119,6 +130,23 @@ class PauseVpnService : VpnService() {
     private fun promote(n: Notification) {
         if (Build.VERSION.SDK_INT >= 34) startForeground(NOTIFICATION_ID, n, ServiceInfo.FOREGROUND_SERVICE_TYPE_SPECIAL_USE)
         else startForeground(NOTIFICATION_ID, n)
+    }
+
+    // Extras are ignored when matching, so cancel(expiryIntent("")) removes any scheduled expiry.
+    private fun expiryIntent(id: String): PendingIntent = PendingIntent.getBroadcast(
+        this, 1, Intent(this, StopReceiver::class.java).setAction(ACTION_EXPIRE).putExtra(EXTRA_ID, id),
+        PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE)
+
+    /** Wakes the device at [elapsedDeadline], exactly when allowed, otherwise as close as Doze permits. */
+    private fun scheduleAlarm(id: String, elapsedDeadline: Long) {
+        val alarms = getSystemService(AlarmManager::class.java)
+        val pending = expiryIntent(id)
+        when {
+            Build.VERSION.SDK_INT < 23 -> alarms.setExact(AlarmManager.ELAPSED_REALTIME_WAKEUP, elapsedDeadline, pending)
+            Build.VERSION.SDK_INT < 31 || alarms.canScheduleExactAlarms() ->
+                alarms.setExactAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, elapsedDeadline, pending)
+            else -> alarms.setAndAllowWhileIdle(AlarmManager.ELAPSED_REALTIME_WAKEUP, elapsedDeadline, pending)
+        }
     }
 
     private fun establishTunnel(packages: Set<String>): TunnelHandle {

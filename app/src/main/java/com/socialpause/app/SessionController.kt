@@ -51,7 +51,8 @@ class SessionController(
 
     /** [minutes] is 1..720, or -1 for a session that runs until stopped. */
     fun start(id: String, packages: Set<String>, minutes: Int) {
-        closeTunnel()
+        // Make before break: an edited session keeps the previous tunnel until the new one is up.
+        cancelWatchers()
         val now = clock.wallTime()
         emit(RuntimeState(id, SessionStatus.STARTING, packages, now, null, null))
         val validId = runCatching { UUID.fromString(id).toString() == id }.getOrDefault(false)
@@ -67,7 +68,9 @@ class SessionController(
         try {
             // Every package must resolve, or the entire session fails.
             if (!packages.all(isInstalled)) error("package unavailable")
+            val previous = handle
             handle = tunnel.establish(packages)
+            try { previous?.close() } catch (_: Exception) { }
         } catch (_: Exception) { fail(id, packages, now, "establish"); return }
         val token = ++generation
         val active = starting.copy(status = SessionStatus.ACTIVE)
@@ -78,25 +81,47 @@ class SessionController(
     }
 
     fun stop(id: String?) {
+        if (completeIfOverdue()) return
         if (current?.id == id) finish(SessionStatus.IDLE, "stopped")
     }
 
+    /** The in-process timer for [generation] fired. */
     fun expire(generation: Long) {
         if (generation == this.generation) finish(SessionStatus.COMPLETED, "expired")
     }
 
+    /**
+     * A wake-up alarm for session [id] fired. Alarms can fire early, late, or after the session
+     * was replaced, so the deadline is re-checked against the clock rather than trusted.
+     */
+    fun expireIfDue(id: String?) {
+        if (current?.id == id) completeIfOverdue()
+    }
+
     /** Interrupts the session if any selected package is no longer installed. */
     fun checkPackages(generation: Long) {
-        if (generation != this.generation) return
+        if (completeIfOverdue() || generation != this.generation) return
         val packages = current?.packages ?: return
         if (!packages.all(isInstalled)) finish(SessionStatus.INTERRUPTED, "package")
     }
 
     fun tunnelClosed(generation: Long) {
+        if (completeIfOverdue()) return
         if (generation == this.generation) finish(SessionStatus.INTERRUPTED, "reader")
     }
 
-    fun revoked() = finish(SessionStatus.INTERRUPTED, "revoked")
+    fun revoked() {
+        if (completeIfOverdue()) return
+        finish(SessionStatus.INTERRUPTED, "revoked")
+    }
+
+    /** Ends an active session whose deadline has passed; returns true if it did. */
+    private fun completeIfOverdue(): Boolean {
+        val running = current ?: return false
+        if (running.status != SessionStatus.ACTIVE || !isDeadlineReached(clock.elapsedRealtime(), running.elapsedDeadline)) return false
+        finish(SessionStatus.COMPLETED, "expired")
+        return true
+    }
 
     /** The host is going away; a running session cannot outlive it. */
     fun destroyed() {
@@ -118,7 +143,8 @@ class SessionController(
     }
 
     private fun finish(status: SessionStatus, reason: String) {
-        val running = current ?: return
+        // A session that already ended keeps its first terminal state.
+        val running = current?.takeIf { it.status in RUNNING } ?: return
         closeTunnel()
         val terminal = running.copy(status = status, elapsedDeadline = null, reason = reason)
         emit(terminal)
@@ -126,9 +152,14 @@ class SessionController(
         host.onEnded()
     }
 
-    private fun closeTunnel() {
+    /** Invalidates every timer, alarm and watcher event of the current generation. */
+    private fun cancelWatchers() {
         generation++
         scheduler.cancel()
+    }
+
+    private fun closeTunnel() {
+        cancelWatchers()
         try { handle?.close() } catch (_: Exception) { }
         handle = null
     }
