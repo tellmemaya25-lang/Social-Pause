@@ -107,6 +107,12 @@ class SessionController(
         if (!packages.all(isInstalled)) finish(SessionStatus.INTERRUPTED, "package")
     }
 
+    /** [packageName] was uninstalled; [replacing] is true when it is only being updated. */
+    fun packageRemoved(packageName: String, replacing: Boolean, generation: Long) {
+        if (completeIfOverdue() || replacing || generation != this.generation) return
+        if (current?.packages?.contains(packageName) == true) finish(SessionStatus.INTERRUPTED, "package")
+    }
+
     fun tunnelClosed(generation: Long) {
         if (completeIfOverdue()) return
         if (generation == this.generation) finish(SessionStatus.INTERRUPTED, "reader")

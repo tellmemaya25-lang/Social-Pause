@@ -8,6 +8,7 @@ import android.app.PendingIntent
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.ServiceInfo
 import android.net.Uri
 import android.net.VpnService
@@ -15,6 +16,7 @@ import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
 import androidx.core.app.NotificationCompat
+import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
 import java.io.FileInputStream
 
@@ -46,7 +48,7 @@ class PauseVpnService : VpnService() {
     private var descriptor: ParcelFileDescriptor? = null
     private var reader: Job? = null
     private var timer: Job? = null
-    private var packageWatch: Job? = null
+    private var packageWatch: BroadcastReceiver? = null
     @Volatile private var sessionStartId = 0
     @Volatile private var latestStartId = 0
     @Volatile private var newestStartRequest = 0
@@ -175,16 +177,22 @@ class PauseVpnService : VpnService() {
             } catch (_: Exception) { /* reported below; stale generations are ignored */ }
             scope.launch { controller.tunnelClosed(generation) }
         }
-        packageWatch = scope.launch {
-            while (isActive) {
-                delay(15_000)
-                controller.checkPackages(generation)
+        packageWatch = object : BroadcastReceiver() {
+            override fun onReceive(context: Context, intent: Intent) {
+                val pkg = intent.data?.schemeSpecificPart ?: return
+                val replacing = intent.getBooleanExtra(Intent.EXTRA_REPLACING, false)
+                scope.launch { controller.packageRemoved(pkg, replacing, generation) }
             }
+        }.also {
+            val filter = IntentFilter(Intent.ACTION_PACKAGE_REMOVED).apply { addDataScheme("package") }
+            ContextCompat.registerReceiver(this, it, filter, ContextCompat.RECEIVER_NOT_EXPORTED)
         }
+        // An app removed between validation and registration would otherwise go unnoticed.
+        scope.launch { controller.checkPackages(generation) }
     }
 
     private fun stopWatching() {
-        packageWatch?.cancel(); packageWatch = null
+        packageWatch?.let { runCatching { unregisterReceiver(it) } }; packageWatch = null
         reader?.cancel(); reader = null
     }
 

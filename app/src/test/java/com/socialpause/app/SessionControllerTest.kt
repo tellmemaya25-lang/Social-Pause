@@ -251,6 +251,37 @@ class SessionControllerTest {
         assertEquals("package", state?.reason)
     }
 
+    @Test fun removingSelectedAppInterruptsImmediately() {
+        controller.start(id, apps, 30)
+        val gen = host.active.last().second
+        controller.packageRemoved("org.example.chat", replacing = false, generation = gen)
+        assertEquals(SessionStatus.INTERRUPTED, state?.status)
+        assertEquals("package", state?.reason)
+        assertEquals(0, tunnel.openCount)
+    }
+
+    @Test fun updatingSelectedAppKeepsPausing() {
+        controller.start(id, apps, 30)
+        val gen = host.active.last().second
+        controller.packageRemoved("org.example.chat", replacing = true, generation = gen)
+        assertEquals(SessionStatus.ACTIVE, state?.status)
+    }
+
+    @Test fun removingUnselectedAppDoesNothing() {
+        controller.start(id, apps, 30)
+        val gen = host.active.last().second
+        controller.packageRemoved("org.example.other", replacing = false, generation = gen)
+        assertEquals(SessionStatus.ACTIVE, state?.status)
+    }
+
+    @Test fun removalFromSupersededGenerationIsIgnored() {
+        controller.start(id, apps, 30)
+        val oldGen = host.active.last().second
+        controller.start(other, apps, 30)
+        controller.packageRemoved("org.example.chat", replacing = false, generation = oldGen)
+        assertEquals(SessionStatus.ACTIVE, state?.status)
+    }
+
     @Test fun invalidInputErrorsWithoutEstablishing() {
         listOf(
             Triple("not-a-uuid", apps, 30),
