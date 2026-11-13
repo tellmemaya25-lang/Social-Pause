@@ -36,7 +36,7 @@
     <string name="privacy_title">Privacy and limitations</string>
     <string name="vpn_explanation">Social Pause uses Android’s VPN to route selected apps’ traffic into a local drop tunnel. It does not connect to a remote VPN server. This implementation is experimental and has not been verified on this device.</string>
     <string name="privacy_explanation">Saved selections are stored on this device and excluded from Android backup. This feature does not send app lists or packet data to a server.</string>
-    <string name="limitations_explanation">Another VPN may conflict. Android routing, profiles and device policies can affect protection. Apps can still open and use offline content. Calls and SMS are not blocked. Protection may stop and will not restart automatically.</string>
+    <string name="limitations_explanation">Another VPN may conflict. Android routing, profiles and device policies can affect protection. Apps can still open and use offline content. Calls and SMS are not blocked. Push notifications delivered through Google Play services and downloads handed to Android’s download manager may still arrive. Protection may stop and will not restart automatically.</string>
     <string name="clear_selection">Clear saved selections</string>
     <string name="clear_selection_title">Clear saved selections?</string>
     <string name="clear_selection_description">This removes your saved app choices from this device.</string>
