@@ -9,6 +9,7 @@ import android.net.VpnService
 import android.os.SystemClock
 import android.os.Build
 import android.Manifest
+import android.content.pm.PackageManager
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.core.content.ContextCompat
@@ -97,10 +98,20 @@ private fun SocialPauseApp(vm: PickerViewModel) {
             page = "home"
         }
     }
-    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) { }
     val consent = rememberLauncherForActivityResult(ActivityResultContracts.StartActivityForResult()) { result ->
         if (result.resultCode == Activity.RESULT_OK) startService()
         else errorMessage = context.getString(R.string.consent_denied)
+    }
+    fun requestVpnAndStart() {
+        try {
+            val prepare = VpnService.prepare(context)
+            if (prepare == null) startService() else consent.launch(prepare)
+        } catch (_: Exception) { errorMessage = context.getString(R.string.service_start_error) }
+    }
+    // The session notification carries the only Stop control outside the app, so ask before starting.
+    var startAfterPermission by rememberSaveable { mutableStateOf(false) }
+    val notificationPermission = rememberLauncherForActivityResult(ActivityResultContracts.RequestPermission()) {
+        if (startAfterPermission) { startAfterPermission = false; requestVpnAndStart() }
     }
     BackHandler(enabled = page != "home") { page = if (page == "duration") "picker" else "home" }
     if (confirmStart) AlertDialog(
@@ -109,10 +120,10 @@ private fun SocialPauseApp(vm: PickerViewModel) {
         text = { Column { Text(stringResource(R.string.consent_description)); if (current?.status == SessionStatus.ACTIVE) Text(stringResource(R.string.edit_warning)) } },
         confirmButton = { TextButton(onClick = {
             confirmStart = false
-            try {
-                val prepare = VpnService.prepare(context)
-                if (prepare == null) startService() else consent.launch(prepare)
-            } catch (_: Exception) { errorMessage = context.getString(R.string.service_start_error) }
+            val needsPermission = Build.VERSION.SDK_INT >= 33 &&
+                ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) != PackageManager.PERMISSION_GRANTED
+            if (needsPermission) { startAfterPermission = true; notificationPermission.launch(Manifest.permission.POST_NOTIFICATIONS) }
+            else requestVpnAndStart()
         }) { Text(stringResource(R.string.continue_label_dialog)) } },
         dismissButton = { TextButton(onClick = { confirmStart = false }) { Text(stringResource(R.string.cancel)) } },
     )
