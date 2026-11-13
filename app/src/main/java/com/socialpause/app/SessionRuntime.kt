@@ -22,7 +22,7 @@ data class RuntimeState(
 )
 
 /** Atomic single-record storage. Backup is disabled in the manifest. */
-class SessionStore(context: Context) {
+class SessionStore(context: Context) : SessionRecords {
     private val prefs = context.applicationContext.getSharedPreferences("session", Context.MODE_PRIVATE)
 
     fun read(): RuntimeState? {
@@ -31,7 +31,7 @@ class SessionStore(context: Context) {
         return RuntimeState(id, status, prefs.getStringSet("packages", emptySet())?.toSet() ?: emptySet(),
             prefs.getLong("start", 0), prefs.getLong("end", -1).takeIf { it >= 0 }, null, prefs.getString("reason", null))
     }
-    fun write(s: RuntimeState): Boolean = prefs.edit().clear()
+    override fun write(s: RuntimeState): Boolean = prefs.edit().clear()
         .putString("id", s.id).putString("status", s.status.name).putStringSet("packages", s.packages.toSet())
         .putLong("start", s.startedAt).putLong("end", s.endsAt ?: -1L).putString("reason", s.reason).commit()
 
