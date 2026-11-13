@@ -15,10 +15,13 @@ import android.net.VpnService
 import android.os.Build
 import android.os.ParcelFileDescriptor
 import android.os.SystemClock
+import android.system.ErrnoException
+import android.system.Os
+import android.system.OsConstants
+import android.system.StructPollfd
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import kotlinx.coroutines.*
-import java.io.FileInputStream
 
 private const val CHANNEL = "pause_session"
 private const val NOTIFICATION_ID = 42
@@ -152,7 +155,7 @@ class PauseVpnService : VpnService() {
     }
 
     private fun establishTunnel(packages: Set<String>): TunnelHandle {
-        val builder = Builder().setSession(getString(R.string.app_name)).setBlocking(true)
+        val builder = Builder().setSession(getString(R.string.app_name)).setBlocking(false)
             .addAddress("10.111.0.1", 32).addRoute("0.0.0.0", 0)
             .addAddress("fd00:111::1", 128).addRoute("::", 0)
         packages.forEach { builder.addAllowedApplication(it) }
@@ -170,12 +173,29 @@ class PauseVpnService : VpnService() {
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(state.id, getString(R.string.status_active), state.endsAt))
         val fd = descriptor ?: return
         reader = scope.launch(Dispatchers.IO) {
-            try {
-                val input = FileInputStream(fd.fileDescriptor)
-                val buffer = ByteArray(32767)
-                while (isActive && input.read(buffer) >= 0) { /* discard without inspecting */ }
-            } catch (_: Exception) { /* reported below; stale generations are ignored */ }
-            scope.launch { controller.tunnelClosed(generation) }
+            val buffer = ByteArray(32767)
+            val pollFd = StructPollfd().apply { this.fd = fd.fileDescriptor; events = OsConstants.POLLIN.toShort() }
+            drainPackets(
+                running = { isActive },
+                poll = {
+                    pollFd.revents = 0
+                    val failed = OsConstants.POLLERR or OsConstants.POLLHUP or OsConstants.POLLNVAL
+                    when {
+                        Os.poll(arrayOf(pollFd), 500) <= 0 -> PollResult.TIMEOUT
+                        pollFd.revents.toInt() and failed != 0 -> PollResult.CLOSED
+                        else -> PollResult.READY
+                    }
+                },
+                read = {
+                    // Discard without inspecting.
+                    try { if (Os.read(fd.fileDescriptor, buffer, 0, buffer.size) == 0) ReadResult.END else ReadResult.PACKET }
+                    catch (e: ErrnoException) {
+                        if (e.errno == OsConstants.EAGAIN || e.errno == OsConstants.EINTR) ReadResult.RETRY else ReadResult.END
+                    }
+                },
+            )
+            // Stale generations are ignored by the controller.
+            if (isActive) scope.launch { controller.tunnelClosed(generation) }
         }
         packageWatch = object : BroadcastReceiver() {
             override fun onReceive(context: Context, intent: Intent) {
