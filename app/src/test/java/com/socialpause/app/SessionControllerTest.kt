@@ -193,6 +193,26 @@ class SessionControllerTest {
         assertEquals(0, tunnel.openCount)
     }
 
+    @Test fun stopPassesThroughStopping() {
+        controller.start(id, apps, 30)
+        published.clear()
+        controller.stop(id)
+        assertEquals(listOf(SessionStatus.STOPPING, SessionStatus.IDLE), published.map { it?.status })
+        assertEquals(SessionStatus.IDLE, store.written.last().status)
+    }
+
+    @Test fun staleStopChangesNothing() {
+        controller.start(id, apps, 30)
+        controller.stop(id)
+        published.clear()
+        val writes = store.written.size
+        controller.stop(id)
+        controller.stop(other)
+        assertTrue(published.isEmpty())
+        assertEquals(writes, store.written.size)
+        assertEquals(1, host.ended)
+    }
+
     @Test fun stopEndsMatchingSessionOnly() {
         controller.start(id, apps, 30)
         controller.stop(other)
