@@ -38,7 +38,8 @@ class PickerViewModel(private val catalog: AppCatalog, private val selections: S
         viewModelScope.launch {
             // Serialize loading and changes so a delayed read cannot overwrite a user action.
             selectionLock.withLock {
-                mutableState.update { it.copy(loading = true, error = false, selectionError = false) }
+                // Only the first load shows loading, so revisiting the picker does not flash disabled controls.
+                mutableState.update { it.copy(loading = it.apps.isEmpty(), error = false, selectionError = false) }
                 try {
                     if (!loadedSelection) {
                         val selected = selections.read()
