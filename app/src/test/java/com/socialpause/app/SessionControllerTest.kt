@@ -11,12 +11,15 @@ class SessionControllerTest {
     private class FakeTunnel : SessionTunnel {
         var failNext = false
         val opened = mutableListOf<Set<String>>()
+        val events = mutableListOf<String>()
         var openCount = 0
         override fun establish(packages: Set<String>): TunnelHandle {
             if (failNext) { failNext = false; throw IllegalStateException("establish failed") }
             opened += packages
             openCount++
-            return object : TunnelHandle { override fun close() { openCount-- } }
+            val n = opened.size
+            events += "open$n"
+            return object : TunnelHandle { override fun close() { openCount--; events += "close$n" } }
         }
     }
 
@@ -149,6 +152,45 @@ class SessionControllerTest {
         assertNotNull(scheduler.scheduled)
         controller.revoked()
         assertNull(scheduler.scheduled)
+    }
+
+    @Test fun editEstablishesNewTunnelBeforeClosingOld() {
+        controller.start(id, apps, 30)
+        controller.start(other, apps + "org.example.other", 15)
+        assertEquals(listOf("open1", "open2", "close1"), tunnel.events)
+        assertEquals(1, tunnel.openCount)
+        assertEquals(SessionStatus.ACTIVE, state?.status)
+        assertEquals(other, state?.id)
+    }
+
+    @Test fun editReplacesOldWatchersAndExpiry() {
+        controller.start(id, apps, 30)
+        val oldGen = host.active.last().second
+        controller.start(other, apps, 15)
+        assertEquals(other, scheduler.scheduled?.first)
+        installed = emptySet()
+        controller.checkPackages(oldGen)
+        controller.tunnelClosed(oldGen)
+        controller.expire(oldGen)
+        assertEquals("Events from the old session must not end the new one", SessionStatus.ACTIVE, state?.status)
+        assertEquals(other, state?.id)
+    }
+
+    @Test fun failedEditClosesEverythingAndErrors() {
+        controller.start(id, apps, 30)
+        tunnel.failNext = true
+        controller.start(other, apps, 15)
+        assertEquals(SessionStatus.ERROR, state?.status)
+        assertEquals("establish", state?.reason)
+        assertEquals(0, tunnel.openCount)
+        assertNull(scheduler.scheduled)
+    }
+
+    @Test fun invalidEditClosesOldTunnel() {
+        controller.start(id, apps, 30)
+        controller.start(other, emptySet(), 15)
+        assertEquals(SessionStatus.ERROR, state?.status)
+        assertEquals(0, tunnel.openCount)
     }
 
     @Test fun stopEndsMatchingSessionOnly() {

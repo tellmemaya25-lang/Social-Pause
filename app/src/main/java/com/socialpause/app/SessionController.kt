@@ -51,7 +51,8 @@ class SessionController(
 
     /** [minutes] is 1..720, or -1 for a session that runs until stopped. */
     fun start(id: String, packages: Set<String>, minutes: Int) {
-        closeTunnel()
+        // Make before break: an edited session keeps the previous tunnel until the new one is up.
+        cancelWatchers()
         val now = clock.wallTime()
         emit(RuntimeState(id, SessionStatus.STARTING, packages, now, null, null))
         val validId = runCatching { UUID.fromString(id).toString() == id }.getOrDefault(false)
@@ -67,7 +68,9 @@ class SessionController(
         try {
             // Every package must resolve, or the entire session fails.
             if (!packages.all(isInstalled)) error("package unavailable")
+            val previous = handle
             handle = tunnel.establish(packages)
+            try { previous?.close() } catch (_: Exception) { }
         } catch (_: Exception) { fail(id, packages, now, "establish"); return }
         val token = ++generation
         val active = starting.copy(status = SessionStatus.ACTIVE)
@@ -149,9 +152,14 @@ class SessionController(
         host.onEnded()
     }
 
-    private fun closeTunnel() {
+    /** Invalidates every timer, alarm and watcher event of the current generation. */
+    private fun cancelWatchers() {
         generation++
         scheduler.cancel()
+    }
+
+    private fun closeTunnel() {
+        cancelWatchers()
         try { handle?.close() } catch (_: Exception) { }
         handle = null
     }
