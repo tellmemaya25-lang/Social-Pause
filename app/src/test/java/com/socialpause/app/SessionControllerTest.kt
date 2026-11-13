@@ -92,6 +92,65 @@ class SessionControllerTest {
         assertEquals(1, host.ended)
     }
 
+    @Test fun alarmExpiryRechecksDeadlineAgainstClock() {
+        controller.start(id, apps, 15)
+        val deadline = state!!.elapsedDeadline!!
+        clock.elapsed = deadline - 1
+        controller.expireIfDue(id)
+        assertEquals("An early alarm must not end the pause", SessionStatus.ACTIVE, state?.status)
+        clock.elapsed = deadline
+        controller.expireIfDue(id)
+        assertEquals(SessionStatus.COMPLETED, state?.status)
+        assertEquals("expired", state?.reason)
+        assertEquals(0, tunnel.openCount)
+        assertEquals(1, host.ended)
+    }
+
+    @Test fun overdueAlarmCompletesWhenTheDeviceWakesLate() {
+        controller.start(id, apps, 15)
+        clock.elapsed = state!!.elapsedDeadline!! + 3 * 60 * 60_000L
+        controller.expireIfDue(id)
+        assertEquals(SessionStatus.COMPLETED, state?.status)
+    }
+
+    @Test fun staleAlarmForAnotherSessionIsIgnored() {
+        controller.start(id, apps, 15)
+        controller.start(other, apps, 30)
+        clock.elapsed += 20 * 60_000L
+        controller.expireIfDue(id)
+        assertEquals(SessionStatus.ACTIVE, state?.status)
+        assertEquals(other, state?.id)
+    }
+
+    @Test fun alarmAfterSessionEndedIsIgnored() {
+        controller.start(id, apps, 15)
+        controller.stop(id)
+        clock.elapsed += 20 * 60_000L
+        controller.expireIfDue(id)
+        assertEquals(SessionStatus.IDLE, state?.status)
+    }
+
+    @Test fun indefiniteSessionNeverExpires() {
+        controller.start(id, apps, -1)
+        clock.elapsed += 365L * 24 * 60 * 60_000L
+        controller.expireIfDue(id)
+        assertEquals(SessionStatus.ACTIVE, state?.status)
+    }
+
+    @Test fun anyCommandEndsAnOverdueSession() {
+        controller.start(id, apps, 15)
+        clock.elapsed = state!!.elapsedDeadline!!
+        controller.stop(other) // unrelated command
+        assertEquals(SessionStatus.COMPLETED, state?.status)
+    }
+
+    @Test fun failingAndStoppingCancelTheScheduledExpiry() {
+        controller.start(id, apps, 15)
+        assertNotNull(scheduler.scheduled)
+        controller.revoked()
+        assertNull(scheduler.scheduled)
+    }
+
     @Test fun stopEndsMatchingSessionOnly() {
         controller.start(id, apps, 30)
         controller.stop(other)
