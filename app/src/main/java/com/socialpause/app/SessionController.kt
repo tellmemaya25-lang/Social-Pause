@@ -82,7 +82,9 @@ class SessionController(
 
     fun stop(id: String?) {
         if (completeIfOverdue()) return
-        if (current?.id == id) finish(SessionStatus.IDLE, "stopped")
+        val running = current?.takeIf { it.id == id && it.status in RUNNING } ?: return
+        emit(running.copy(status = SessionStatus.STOPPING))
+        finish(SessionStatus.IDLE, "stopped")
     }
 
     /** The in-process timer for [generation] fired. */
@@ -103,6 +105,12 @@ class SessionController(
         if (completeIfOverdue() || generation != this.generation) return
         val packages = current?.packages ?: return
         if (!packages.all(isInstalled)) finish(SessionStatus.INTERRUPTED, "package")
+    }
+
+    /** [packageName] was uninstalled; [replacing] is true when it is only being updated. */
+    fun packageRemoved(packageName: String, replacing: Boolean, generation: Long) {
+        if (completeIfOverdue() || replacing || generation != this.generation) return
+        if (current?.packages?.contains(packageName) == true) finish(SessionStatus.INTERRUPTED, "package")
     }
 
     fun tunnelClosed(generation: Long) {

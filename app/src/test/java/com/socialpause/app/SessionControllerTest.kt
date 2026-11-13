@@ -193,6 +193,26 @@ class SessionControllerTest {
         assertEquals(0, tunnel.openCount)
     }
 
+    @Test fun stopPassesThroughStopping() {
+        controller.start(id, apps, 30)
+        published.clear()
+        controller.stop(id)
+        assertEquals(listOf(SessionStatus.STOPPING, SessionStatus.IDLE), published.map { it?.status })
+        assertEquals(SessionStatus.IDLE, store.written.last().status)
+    }
+
+    @Test fun staleStopChangesNothing() {
+        controller.start(id, apps, 30)
+        controller.stop(id)
+        published.clear()
+        val writes = store.written.size
+        controller.stop(id)
+        controller.stop(other)
+        assertTrue(published.isEmpty())
+        assertEquals(writes, store.written.size)
+        assertEquals(1, host.ended)
+    }
+
     @Test fun stopEndsMatchingSessionOnly() {
         controller.start(id, apps, 30)
         controller.stop(other)
@@ -229,6 +249,37 @@ class SessionControllerTest {
         controller.checkPackages(gen)
         assertEquals(SessionStatus.INTERRUPTED, state?.status)
         assertEquals("package", state?.reason)
+    }
+
+    @Test fun removingSelectedAppInterruptsImmediately() {
+        controller.start(id, apps, 30)
+        val gen = host.active.last().second
+        controller.packageRemoved("org.example.chat", replacing = false, generation = gen)
+        assertEquals(SessionStatus.INTERRUPTED, state?.status)
+        assertEquals("package", state?.reason)
+        assertEquals(0, tunnel.openCount)
+    }
+
+    @Test fun updatingSelectedAppKeepsPausing() {
+        controller.start(id, apps, 30)
+        val gen = host.active.last().second
+        controller.packageRemoved("org.example.chat", replacing = true, generation = gen)
+        assertEquals(SessionStatus.ACTIVE, state?.status)
+    }
+
+    @Test fun removingUnselectedAppDoesNothing() {
+        controller.start(id, apps, 30)
+        val gen = host.active.last().second
+        controller.packageRemoved("org.example.other", replacing = false, generation = gen)
+        assertEquals(SessionStatus.ACTIVE, state?.status)
+    }
+
+    @Test fun removalFromSupersededGenerationIsIgnored() {
+        controller.start(id, apps, 30)
+        val oldGen = host.active.last().second
+        controller.start(other, apps, 30)
+        controller.packageRemoved("org.example.chat", replacing = false, generation = oldGen)
+        assertEquals(SessionStatus.ACTIVE, state?.status)
     }
 
     @Test fun invalidInputErrorsWithoutEstablishing() {
